@@ -1,0 +1,92 @@
+# -----------------------------------------------------------------------------
+# Script Name: ExportMailboxDelegates.ps1
+# Description: Exports a list of all mailboxes and their delegated access
+#              permissions in Exchange Online.
+# Disclaimer: This script was written by Simon Hopkin (Head of Cyber Security)
+#             on [22-10-24].
+# Note: Ensure that you have the necessary permissions to run this script.
+# -----------------------------------------------------------------------------
+
+Install-Module ExchangeOnlineManagement -Scope CurrentUser
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+# Install ExchangeOnlineManagement module if not already installed
+# Install-Module ExchangeOnlineManagement -Scope CurrentUser
+# Connect to Exchange Online
+Import-Module ExchangeOnlineManagement
+Connect-ExchangeOnline -UserPrincipalName username@test.co.uk
+# Define an array to store results
+$Results = @()
+# Get all mailboxes in the organization
+$mailboxes = Get-EXOMailbox -ResultSize Unlimited
+
+foreach ($mailbox in $mailboxes) {
+    Write-Host "Processing mailbox: $($mailbox.UserPrincipalName)"
+
+    # Determine mailbox type
+    $mailboxType = $mailbox.RecipientTypeDetails.ToString()
+
+    # Get Full Access permissions
+    $fullAccessPermissions = Get-MailboxPermission -Identity $mailbox.Identity | Where-Object {
+        ($_.User.ToString() -ne "NT AUTHORITY\SELF") -and
+        ($_.User.ToString() -notlike "S-1-5*") -and
+        ($_.AccessRights -contains "FullAccess") -and
+        ($_.IsInherited -eq $false)
+    }
+
+    foreach ($permission in $fullAccessPermissions) {
+        $Results += [PSCustomObject]@{
+            Mailbox      = $mailbox.UserPrincipalName
+            MailboxType  = $mailboxType
+            DelegateType = "Full Access"
+            Delegate     = $permission.User.ToString()
+            AccessRights = ($permission.AccessRights -join ", ")
+        }
+    }
+
+    # Get Send As permissions
+    $sendAsPermissions = Get-RecipientPermission -Identity $mailbox.Identity | Where-Object {
+        ($_.Trustee -notlike "NT AUTHORITY\SELF") -and
+        ($_.Trustee -notlike "S-1-5*") -and
+        ($_.AccessRights -contains "SendAs")
+    }
+
+    foreach ($permission in $sendAsPermissions) {
+        $Results += [PSCustomObject]@{
+            Mailbox      = $mailbox.UserPrincipalName
+            MailboxType  = $mailboxType
+            DelegateType = "Send As"
+            Delegate     = $permission.Trustee
+            AccessRights = "Send As"
+        }
+    }
+
+    # Get Send On Behalf permissions
+    if ($mailbox.GrantSendOnBehalfTo -ne $null) {
+        foreach ($user in $mailbox.GrantSendOnBehalfTo) {
+            $Results += [PSCustomObject]@{
+                Mailbox      = $mailbox.UserPrincipalName
+                MailboxType  = $mailboxType
+                DelegateType = "Send On Behalf"
+                Delegate     = $user.Name
+                AccessRights = "Send On Behalf"
+            }
+        }
+    }
+}
+
+# Define the path to C:\temp
+$exportPath = "C:\temp"
+
+# Check if the directory exists; if not, create it
+if (-not (Test-Path -Path $exportPath)) {
+    New-Item -Path $exportPath -ItemType Directory | Out-Null
+}
+
+# Define the full file path
+$csvFilePath = Join-Path -Path $exportPath -ChildPath "MailboxDelegates.csv"
+
+# Export the results to a CSV file in C:\temp
+$Results | Export-Csv -Path $csvFilePath -NoTypeInformation -Encoding UTF8
+
+Write-Host "Export completed. The file 'MailboxDelegates.csv' has been created in C:\temp."
